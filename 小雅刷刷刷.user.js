@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅刷刷刷
 // @namespace    local.xiaoya.shuashuashua
-// @version      1.5.1
+// @version      1.5.4
 // @description  一键作业刷：AI作业与讨论、按规定时长查看文档、视频播放及任务完成，支持资源下载和二维码
 // @match        https://whut.ai-augmented.com/*
 // @exclude      https://infra.ai-augmented.com/*
@@ -10127,7 +10127,7 @@ return module.exports;})();
 /* 小雅刷刷刷 · application source; jsQR is bundled separately. */
 (() => {
   'use strict';
-  const VERSION = '1.5.1';
+  const VERSION = '1.5.4';
   const BRUSH_REFRESH_KEY='xy-sss-brush-refresh-v1';
   const ROOT = 'xy-sss-root';
   const DIRECTORY_ID=location.hash.match(/^#xy-directory=([a-zA-Z0-9-]+)$/)?.[1]||'';
@@ -10534,12 +10534,14 @@ return module.exports;})();
   // the requested full reload after a successful submission and is consumed on mount.
   function clearBrushRefresh(){try{sessionStorage.removeItem(BRUSH_REFRESH_KEY);}catch{}}
   function reloadPage(){page.location.reload();}
-  function refreshAfterTask(run){
+  function refreshAfterTask(run,recovery=false){
     brushActive(run);
     const checkpoint={version:VERSION,expires:Date.now()+300000,route:location.href,course:run.course,started:run.started,completed:run.completed,visited:[...run.visited],phase:run.phase,mediaKinds:[...run.mediaKinds],apiKey:state.apiKey,endpoint:ui.querySelector('#endpoint').value.trim(),model:ui.querySelector('#model').value.trim()};
+    if(recovery){checkpoint.videoRecovery=true;checkpoint.recoveryResource=location.pathname.match(/\/resource\/[^/]+\/([^/]+)/)?.[1];checkpoint.pendingTask=run.pendingTask;checkpoint.recoveryCounts=[...(run.recoveryCounts||[])];}
     try{sessionStorage.setItem(BRUSH_REFRESH_KEY,JSON.stringify(checkpoint));}
     catch{throw new Error('浏览器无法保存本次刷新进度，已停止；请检查会话存储后重新开始');}
     brushActive(run);run.reloading=true;state.refreshPending=true;
+    if(recovery)return;
     aiStatus(`已完成 ${run.completed} 项任务，正在刷新网页，刷新后自动继续…`);
     try{reloadPage();}catch(e){state.refreshPending=false;clearBrushRefresh();throw e;}
   }
@@ -10548,7 +10550,9 @@ return module.exports;})();
     if(!saved)return;clearBrushRefresh();state.refreshPending=false;
     try{
       const c=JSON.parse(saved);
-      if(c.version!==VERSION||!Number.isFinite(c.expires)||c.expires<Date.now()||c.expires>Date.now()+300000||c.route!==location.href||c.course!==courseId()||!/^\/app\/jx-web\/mycourse\/[^/]+\/task\/?$/.test(location.pathname)||!Number.isFinite(c.started)||Date.now()-c.started>3600000||c.started>Date.now()||!Number.isInteger(c.completed)||c.completed<1||c.completed>500||!Array.isArray(c.visited)||c.visited.length>1000||c.visited.some(id=>typeof id!=='string')||typeof c.apiKey!=='string'||typeof c.endpoint!=='string'||typeof c.model!=='string'||!c.model.trim()||!Number.isInteger(c.phase)||c.phase<0||c.phase>2||!Array.isArray(c.mediaKinds)||c.mediaKinds.length>500||c.mediaKinds.some(pair=>!Array.isArray(pair)||pair.length!==2||typeof pair[0]!=='string'||!['video','document','unsupported'].includes(pair[1])))return;
+      const mediaRoute=location.pathname.match(/^\/app\/jx-web\/mycourse\/([^/]+)\/resource\/[^/]+\/([^/]+)\/?$/);
+      const recovery=c.videoRecovery===true&&mediaRoute&&c.pendingTask&&c.recoveryResource===mediaRoute[2]&&typeof c.pendingTask.id==='string'&&c.pendingTask.id.length>0&&typeof c.pendingTask.title==='string'&&['自主观看','文档','视频','查看文档','观看视频'].includes(c.pendingTask.type)&&Array.isArray(c.recoveryCounts)&&c.recoveryCounts.length<=500&&c.recoveryCounts.every(p=>Array.isArray(p)&&p.length===2&&typeof p[0]==='string'&&Number.isInteger(p[1])&&p[1]>=1&&p[1]<=2)&&c.recoveryCounts.some(p=>p[0]===location.href);
+      if(c.version!==VERSION||!Number.isFinite(c.expires)||c.expires<Date.now()||c.expires>Date.now()+300000||c.route!==location.href||c.course!==courseId()||(!recovery&&!/^\/app\/jx-web\/mycourse\/[^/]+\/task\/?$/.test(location.pathname))||!Number.isFinite(c.started)||Date.now()-c.started>3600000||c.started>Date.now()||!Number.isInteger(c.completed)||c.completed<(recovery?0:1)||c.completed>500||!Array.isArray(c.visited)||c.visited.length>1000||c.visited.some(id=>typeof id!=='string')||typeof c.apiKey!=='string'||typeof c.endpoint!=='string'||typeof c.model!=='string'||!c.model.trim()||!Number.isInteger(c.phase)||c.phase<0||c.phase>2||!Array.isArray(c.mediaKinds)||c.mediaKinds.length>500||c.mediaKinds.some(pair=>!Array.isArray(pair)||pair.length!==2||typeof pair[0]!=='string'||!['video','document','unsupported'].includes(pair[1])))return;
       ui.querySelector('#endpoint').value=c.endpoint;ui.querySelector('#model').value=c.model;ui.querySelector('#apiKey').value=c.apiKey;state.apiKey=c.apiKey;switchTab('AI作业');
       aiStatus(`刷新完成，继续本轮刷题（已完成 ${c.completed} 项任务）…`);
       return startBrush(c);
@@ -10577,7 +10581,7 @@ return module.exports;})();
   }
   function studyKind(title=''){
     if(previewGates().length)return '';
-    if(videos().length)return 'video';
+    if(studyVideos().length)return 'video';
     const name=text(studyHeader()?.querySelector('.header-file'))||title;
     if(/\.(?:mp4|webm|m4v|mov|mkv)(?:\s|$)/i.test(name))return 'video';
     if(DOCUMENT_NAME.test(name)||previewState().ready)return 'document';
@@ -10586,13 +10590,80 @@ return module.exports;})();
   function muteStudyMedia(){
     for(const d of docs())for(const media of d.querySelectorAll('.group-resource-content video,.group-resource-content audio')){media.muted=true;media.defaultMuted=true;}
   }
+  function studyVideos(){return docs().flatMap(d=>[...d.querySelectorAll('video')]).filter(v=>v.isConnected&&(visible(v)||!!v.closest('.prism-player')&&visible(v.closest('.prism-player'))));}
+  function studyPlayButton(v){
+    const wrapper=v.closest('.prism-player,.ali_player_wrapper');if(!wrapper)return null;
+    for(const selector of ['.prism-big-play-btn','.prism-play-btn']){
+      const buttons=[...wrapper.querySelectorAll(selector)].filter(e=>visible(e)&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'&&!e.classList.contains('playing')&&!e.closest('.disabled,[disabled]'));
+      if(buttons.length===1)return buttons[0];
+    }
+    return null;
+  }
+  function studyVideoError(){
+    const players=docs().flatMap(d=>[...d.querySelectorAll('.prism-player,.ali_player_wrapper')]).filter(e=>visible(e)&&!(e.matches('.ali_player_wrapper')&&e.querySelector('.prism-player')));
+    const errors=players.filter(e=>/vid对应的视频地址还未获取到/.test(text(e).replace(/\s/g,'')));
+    if(errors.length!==1)return null;
+    const buttons=[...errors[0].querySelectorAll('button,a,[role="button"],div,span')].filter(e=>visible(e)&&compact(text(e))==='刷新'&&![...e.children].some(c=>compact(text(c))==='刷新')&&!e.closest('[disabled],[aria-disabled="true"],.disabled'));
+    return {player:errors[0],button:buttons.length===1?buttons[0]:null};
+  }
+  async function startStudyVideo(run,route){
+    const began=Date.now(),states=new WeakMap();let current=null;
+    while(Date.now()-began<20000){
+      assertStudy(run,route);if(studyVideoError())throw new Error('视频地址未获取到');
+      const list=studyVideos(),v=list.length===1?list[0]:null;
+      if(v){
+        if(current!==v){stopStudyVideo(run);current=v;run.studyVideo=v;}
+        v.muted=true;v.defaultMuted=true;v.playbackRate=2;
+        let s=states.get(v);if(!s){s={buttons:new WeakSet(),nativeAt:0,pending:false,attempts:0,retryAt:0,error:null};states.set(v,s);}
+        if(s.error)throw s.error;
+        if(s.started){if(v.paused&&!v.ended)throw new Error('视频已暂停，作业刷已停止；恢复播放后可重新开始');return v;}
+        if(!v.paused){run.studySource=videoSource(v);return v;}
+        const control=studyPlayButton(v);
+        if(control&&!s.buttons.has(control)){
+          assertStudy(run,route);s.buttons.add(control);s.nativeAt=Date.now();control.click();
+          if(!v.paused&&v.isConnected){run.studySource=videoSource(v);return v;}
+        }
+        // Refresh may replace the video or add its source and controls later.
+        // Re-discover all three instead of keeping the first stale element.
+        if(!s.pending&&Date.now()-s.nativeAt>=1500&&Date.now()>=s.retryAt&&(videoSource(v)||v.readyState>0)&&s.attempts<3){
+          s.pending=true;s.attempts++;
+          const failed=error=>{s.pending=false;const value=String(error?.name||'')+' '+String(error?.message||error);if(/AbortError|NotSupportedError/.test(value))s.retryAt=Date.now()+500;else s.error=new Error('浏览器阻止自动播放，请先在视频上点击播放后重新开始作业刷');};
+          try{Promise.resolve(v.play()).then(()=>{
+            s.pending=false;
+            if(run.cancelled||state.brush!==run||location.href!==route||run.studyVideo!==v||!v.isConnected){try{v.pause();v.playbackRate=1;}catch{}return;}
+            if(!v.paused){run.studySource=videoSource(v);s.started=true;}
+            else s.retryAt=Date.now()+500;
+          },failed);}catch(error){failed(error);}
+        }
+        if(s.started){if(v.paused&&!v.ended)throw new Error('视频已暂停，作业刷已停止；恢复播放后可重新开始');return v;}
+      }
+      aiStatus('正在等待刷新后的视频与播放控件就绪，恢复静音播放…');
+      await delay(150);
+    }
+    throw new Error('视频刷新后尚未开始播放，请检查网络或手动播放后重新开始作业刷');
+  }
+  async function recoverStudyVideo(run,task){
+    const route=location.href;assertStudy(run,route);const error=studyVideoError();if(!error)return false;
+    if(!error.button)throw new Error('视频地址未获取到，但未找到唯一可用的播放器刷新按钮');
+    run.recoveryCounts||=new Map();const count=run.recoveryCounts.get(route)||0;
+    if(count>=2)throw new Error('视频地址获取失败，已自动刷新2次仍未恢复，请检查网络后重试');
+    // Save before the native click: some player versions reload the entire page.
+    if(!run.pendingTask)throw new Error('无法保存当前视频任务，请从课程任务列表重新开始');
+    run.recoveryCounts.set(route,count+1);stopStudyVideo(run);refreshAfterTask(run,true);
+    aiStatus(`视频地址未获取到，正在点击播放器“刷新”（${count+1}/2）…`);
+    try{
+      assertStudy(run,route);error.button.click();
+      await waitBrush(run,()=>{assertStudy(run,route);muteStudyMedia();return !studyVideoError();},15000,()=> '播放器刷新后仍未恢复，请检查网络后重试');
+      assertStudy(run,route);return true;
+    }finally{run.reloading=false;state.refreshPending=false;clearBrushRefresh();}
+  }
   async function prepareStudyPreview(run,task){
     const route=location.href;run.studying=true;
     return waitBrush(run,()=>{
       assertStudy(run,route);
       const gated=confirmPreview();muteStudyMedia();
       if(gated){aiStatus(`正在确认文件预览：${task.title}，等待文件加载…`);return null;}
-      return studyKind(task.title);
+      return studyVideoError()?'video':studyKind(task.title);
     },30000,()=>previewGates().length?'文件预览确认尚未完成，请检查平台提示或确认按钮是否可用':'文件预览未加载为文档或视频，请检查网络或资源类型');
   }
   function taskPriority(task,run){
@@ -10615,13 +10686,13 @@ return module.exports;})();
         const requirement=watchRequirement(value);
         if(requirement){const modal=e.closest('.ant-modal-content,[role="dialog"]')||e;return {requirement,modal,at:studyNow()};}
         if(/未开始|已截止|无权限|无法设为完成|无权|操作失败|请求失败/.test(value))throw new Error(`平台提示：${value}`);
-        if(/视频|观看|播放|进度/.test(value)&&/未|不足|达到|完成|有效/.test(value))return {progress:value};
+        if(/视频|观看|播放|进度/.test(value)&&/未|不足|达到|完成|有效/.test(value))return {progress:value,modal:e.closest('.ant-modal-content,[role="dialog"]')};
       }
       return null;
     },10000,()=> '点击完成后尚未收到平台完成状态或观看要求，已停止；请检查页面结果');
     if(response.modal){
       const buttons=[...response.modal.querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&/^(知道了|确定|我知道了)$/.test(compact(text(e))));
-      if(buttons.length!==1)throw new Error('已读取观看时长，但无法唯一识别提示关闭按钮');
+      if(buttons.length!==1)throw new Error('已读取观看要求，但无法唯一识别提示关闭按钮');
       assertStudy(run,route);buttons[0].click();
     }
     return response;
@@ -10631,18 +10702,11 @@ return module.exports;})();
     try{
     if(previewGates().length){const detected=await prepareStudyPreview(run,task);if(detected!==kind)throw new Error('文件预览加载后的类型已变化，请重新点击“作业刷”');}
     muteStudyMedia();
+    if(kind==='video')await recoverStudyVideo(run,task);
     let result=await studyCompletion(run,route);
     if(result.done)return result;
     if(kind==='video'){
-      const v=await waitBrush(run,()=>videos().length===1?videos()[0]:null,15000,()=> '未找到唯一可访问的视频播放器，请手动打开视频后重试');
-      assertStudy(run,route);run.studyVideo=v;const source=videoSource(v);v.muted=true;v.defaultMuted=true;v.playbackRate=2;
-      let playing=false,playError=null;
-      try{Promise.resolve(v.play()).then(()=>{
-        if(run.cancelled||state.brush!==run||location.href!==route){try{v.pause();v.playbackRate=1;}catch{}return;}
-        playing=true;
-      },error=>{playError=error;});}catch(error){playError=error;}
-      await waitBrush(run,()=>{assertStudy(run,route);if(playError)throw new Error('浏览器阻止自动播放，请先在视频上点击播放后重新开始作业刷');if(playing&&v.paused&&!v.ended)throw new Error('视频已暂停，作业刷已停止；恢复播放后可重新开始');return playing;},15000,()=> '视频尚未开始播放，请检查网络或手动播放后重新开始作业刷');
-      assertStudy(run,route);run.studySource=source;
+      await startStudyVideo(run,route);
     }
       for(let attempt=0;attempt<4;attempt++){
         if(!result.requirement&&kind!=='video')throw new Error('未能读取“至少观看”的时长，已停止，避免提前切换文档');
@@ -10653,6 +10717,7 @@ return module.exports;})();
           muteStudyMedia();
           const v=run.studyVideo;
           if(kind==='video'){
+            if(studyVideoError())throw new Error('视频地址未获取到');
             if(!v?.isConnected||videoSource(v)!==run.studySource)throw new Error('播放器或视频已切换，观看任务已停止');
             if(v.error)throw new Error('视频播放出错，已停止自动任务');
             if(v.paused&&!v.ended)throw new Error('视频已暂停，作业刷已停止；恢复播放后可重新开始');
@@ -10667,6 +10732,9 @@ return module.exports;})();
         if(!result.requirement&&run.studyVideo?.ended)throw new Error('视频已播放结束，平台仍未确认任务完成；已停止，请查看平台提示');
       }
       throw new Error('平台多次提示观看要求尚未满足，已停止；请检查计时或视频进度');
+    }catch(error){
+      if(kind==='video'&&studyVideoError()&&await recoverStudyVideo(run,task))return await studyResource(run,task,kind);
+      throw error;
     }finally{run.studying=false;stopStudyVideo(run);}
   }
   function formalTaskId(){return location.pathname.match(/\/course_paper\/mycourse\/[^/]+\/[^/]+\/([^/]+)\//)?.[1]||'';}
@@ -10719,7 +10787,7 @@ return module.exports;})();
     const course=courseId();if(!course){aiStatus('请先打开目标课程，再点击“作业刷”查找未完成作业');return;}
     state.apiKey=ui.querySelector('#apiKey').value.trim();
     clearBrushRefresh();
-    const run={course,cancelled:false,started:resume?.started||Date.now(),visited:new Set(resume?.visited||[]),pages:new Set(),completed:resume?.completed||0,phase:resume?.phase||0,mediaKinds:new Map(resume?.mediaKinds||[])};state.previewConfirmations=new WeakMap();state.brush=run;ui.querySelector('#startAI').disabled=true;stopReading();stopPlayback();aiStatus('正在检索任务：AI作业 → 文档 → 视频…');
+    const run={course,cancelled:false,started:resume?.started||Date.now(),visited:new Set(resume?.visited||[]),pages:new Set(),completed:resume?.completed||0,phase:resume?.phase||0,mediaKinds:new Map(resume?.mediaKinds||[]),pendingTask:resume?.videoRecovery?resume.pendingTask:null,recoveryCounts:new Map(resume?.recoveryCounts||[])};state.previewConfirmations=new WeakMap();state.brush=run;ui.querySelector('#startAI').disabled=true;stopReading();stopPlayback();aiStatus('正在检索任务：AI作业 → 文档 → 视频…');
     try{
       for(let transitions=0;transitions<500;transitions++){
         brushActive(run);
