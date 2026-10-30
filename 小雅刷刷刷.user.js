@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小雅刷刷刷
 // @namespace    local.xiaoya.shuashuashua
-// @version      1.5.5
+// @version      1.5.6
 // @description  一键作业刷：AI作业与讨论、按规定时长查看文档、视频播放及任务完成，支持资源下载和二维码
 // @match        https://whut.ai-augmented.com/*
 // @exclude      https://infra.ai-augmented.com/*
@@ -10127,7 +10127,7 @@ return module.exports;})();
 /* 小雅刷刷刷 · application source; jsQR is bundled separately. */
 (() => {
   'use strict';
-  const VERSION = '1.5.5';
+  const VERSION = '1.5.6';
   const BRUSH_REFRESH_KEY='xy-sss-brush-refresh-v1';
   const ROOT = 'xy-sss-root';
   const DIRECTORY_ID=location.hash.match(/^#xy-directory=([a-zA-Z0-9-]+)$/)?.[1]||'';
@@ -10608,7 +10608,7 @@ return module.exports;})();
   }
   async function startStudyVideo(run,route,expected=null){
     const began=Date.now(),states=new WeakMap();let current=run.studyVideo||null;
-    while(Date.now()-began<20000){
+    while(true){
       assertStudy(run,route);if(studyVideoError())throw new Error('视频地址未获取到');
       const list=studyVideos(),v=list.length===1?list[0]:null;
       if(expected&&(!expected.video.isConnected||videoSource(expected.video)!==expected.source||v&&v!==expected.video))throw new Error('播放器或视频已切换，观看任务已停止');
@@ -10639,6 +10639,7 @@ return module.exports;})();
         }
       }
       aiStatus('正在等待刷新后的视频与播放控件就绪，恢复静音播放…');
+      if(Date.now()-began>=20000)break;
       await delay(150);
     }
     throw new Error('视频刷新后尚未开始播放，请检查网络或手动播放后重新开始作业刷');
@@ -10683,7 +10684,7 @@ return module.exports;})();
     return /\.(?:mp4|webm|m4v|mov|mkv)(?:\s|$)/i.test(task.title)?2:1;
   }
   function studyMessages(){return docs().flatMap(d=>[...d.querySelectorAll('.finish_task_info,.ant-message-notice-content,.ant-modal-content,[role="status"]')]).filter(visible);}
-  function assertStudy(run,route){brushActive(run);if(location.href!==route)throw new Error('页面已切换，观看任务已停止');if(document.hidden)throw new Error('页面转入后台，观看任务已暂停');}
+  function assertStudy(run,route){brushActive(run);if(location.href!==route)throw new Error('页面已切换，观看任务已停止');}
   function stopStudyVideo(run){run?.removeStudyPause?.();if(run)run.removeStudyPause=null;const v=run?.studyVideo;if(v){try{v.pause();v.playbackRate=1;}catch{}run.studyVideo=null;}}
   async function studyCompletion(run,route){
     assertStudy(run,route);if(studyDone())return {done:true,alreadyDone:true};
@@ -10718,7 +10719,7 @@ return module.exports;})();
     if(kind==='video'){
       await startStudyVideo(run,route);
       const v=run.studyVideo;
-      const onPause=()=>{if(!run.cancelled&&state.brush===run&&location.href===route&&!document.hidden&&v.paused&&!v.ended&&!v.error){try{resumeStudyVideo(run,route);}catch(error){run.resumeError=error;}}};
+      const onPause=()=>{if(!run.cancelled&&state.brush===run&&location.href===route&&v.paused&&!v.ended&&!v.error){try{resumeStudyVideo(run,route);}catch(error){run.resumeError=error;}}};
       v.addEventListener('pause',onPause);run.removeStudyPause=()=>v.removeEventListener('pause',onPause);
     }
       for(let attempt=0;attempt<4;attempt++){
@@ -10795,7 +10796,7 @@ return module.exports;})();
     const poll=setInterval(()=>{if(settled||run.cancelled)return;if(kind!=='作业'&&location.href!==entryRoute&&courseId()===run.course&&(discussionContext()||studyHeader())){state.route=location.href;finish();return;}if(startConfirmed)return;const dialogs=docs().flatMap(d=>[...d.querySelectorAll('[role="dialog"],.ant-modal-content')]).filter(e=>visible(e)&&/答题|计时/.test(text(e)));const buttons=[...new Set(dialogs.flatMap(e=>[...e.querySelectorAll('button')]).filter(e=>visible(e)&&!e.disabled&&text(e)==='开始答题'))];if(buttons.length===1){startConfirmed=true;buttons[0].click();}},200);
     try{await result;}finally{clearInterval(poll);}
   }
-  async function waitBrush(run,predicate,timeout=15000,onTimeout=()=> '任务页面加载超时，请检查网络后重新作业刷'){const began=Date.now();while(Date.now()-began<timeout){brushActive(run);const value=predicate();if(value)return value;await delay(150);}throw new Error(onTimeout());}
+  async function waitBrush(run,predicate,timeout=15000,onTimeout=()=> '任务页面加载超时，请检查网络后重新作业刷'){const began=Date.now();while(true){brushActive(run);const value=predicate();if(value)return value;if(Date.now()-began>=timeout)throw new Error(onTimeout());await delay(150);}}
   async function startBrush(resume=null){
     if(state.brush&&!state.brush.cancelled)return;if(state.aiBusy)return;
     const course=courseId();if(!course){aiStatus('请先打开目标课程，再点击“作业刷”查找未完成作业');return;}
@@ -11045,7 +11046,7 @@ return module.exports;})();
   function readingTick(){
     const r=state.reader;if(!r.running)return;
     if(readerScope()!==r.scope){stopReading('已离开当前文档目录，快览已停止');return;}
-    if(document.hidden)return;
+
     if(!r.loading){nextDocument();return;}
     confirmPreview();muteStudyMedia();
     const rows=documentRows(),selected=rows.find(x=>x.selected);
@@ -11136,7 +11137,7 @@ return module.exports;})();
       const v=e.data;if(v?.channel==='xy-sss-resource-v1'&&v.item&&['文档','图片','视频','流媒体清单'].includes(v.item.type))addResource(v.item.url,v.item.name,v.item.type,'内嵌页面');
     });
     window.addEventListener('pagehide',()=>{stopCamera();stopPlayback();stopReading();if(!state.refreshPending)pauseAI();});
-    document.addEventListener('visibilitychange',()=>{if(document.hidden){if(state.brush?.studying)pauseAI('页面转入后台，观看任务已暂停');stopCamera();if(state.reader.running)stopReading('页面转入后台，文档快览暂停');}});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();});
     restoreBrushAfterRefresh();
   }
   function switchTab(name){
